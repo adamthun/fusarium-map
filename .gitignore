@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
+# Build
+build/
+dist/
+
+# Environment — SOHA ne kerüljön GitHubra!
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+fusarium_cron.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+.vercel
+.env*
