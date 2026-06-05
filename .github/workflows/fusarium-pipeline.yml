@@ -2,8 +2,8 @@ name: Fusarium ODP Adatgyűjtő
 
 on:
   schedule:
-    - cron: '45 * * * *'   # Óránkénti adatletöltés
-    - cron: '0 6 * * *'    # Napi kockázatszámítás
+    - cron: '45 * * * *'
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       date:
@@ -15,26 +15,29 @@ on:
         required: false
         default: '1'
       mode:
-        description: 'Mode: fetch / calc / both'
+        description: 'Mode: fetch / calc / both / backfill'
         required: false
         default: 'both'
+      years:
+        description: 'Backfill évek (pl: 2024 2025)'
+        required: false
+        default: '2025'
 
 jobs:
   fetch-odp:
     name: ODP adatletöltés
     runs-on: ubuntu-latest
-
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.mode == 'fetch' || github.event.inputs.mode == 'both'))
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
-      - name: Függőségek
-        run: pip install -r scripts/requirements.txt
-
+      - run: pip install -r scripts/requirements.txt
       - name: ODP letöltés
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
@@ -52,19 +55,19 @@ jobs:
     name: Fusarium kockázatszámítás
     runs-on: ubuntu-latest
     needs: fetch-odp
-    if: always()
-
+    if: |
+      always() && (
+        github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' &&
+         (github.event.inputs.mode == 'calc' || github.event.inputs.mode == 'both'))
+      )
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
-      - name: Függőségek
-        run: pip install -r scripts/requirements.txt
-
+      - run: pip install -r scripts/requirements.txt
       - name: Kockázatszámítás
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
@@ -77,22 +80,39 @@ jobs:
             python scripts/calc_risk.py
           fi
 
+  backfill:
+    name: Historikus backfill
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.mode == 'backfill'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r scripts/requirements.txt
+      - name: Backfill szezónok
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          YEARS="${{ github.event.inputs.years || '2025' }}"
+          python scripts/backfill_history.py --years $YEARS --no-calc
+
   health-check:
     name: Adatbázis ellenőrzés
     runs-on: ubuntu-latest
     needs: calculate-risk
     if: always()
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Pip install requests
-        run: pip install requests
-
+      - run: pip install requests
       - name: DB státusz
         env:
           SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
@@ -104,28 +124,5 @@ jobs:
           key = os.environ['SUPABASE_ANON_KEY']
           h = {'apikey': key, 'Authorization': f'Bearer {key}'}
           r = requests.get(f'{url}/rest/v1/fusarium_risk?select=calc_date&order=calc_date.desc&limit=1', headers=h)
-          print('DB státusz:', r.status_code)
-          if r.ok:
-              print('Legfrissebb adat:', r.json())
+          print('DB státusz:', r.status_code, r.json())
           "
-
-  # ── OPCIONÁLIS: Historikus backfill (csak manuálisan) ──
-  backfill:
-    name: Historikus backfill
-    runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.mode == 'backfill'
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-      - run: pip install -r scripts/requirements.txt
-      - name: Backfill 2024-2026 szezónok
-        env:
-          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python scripts/backfill_history.py --years 2024 2025 2026
