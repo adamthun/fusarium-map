@@ -339,59 +339,72 @@ export default function App() {
 
       {/* KONTROLLOK */}
       <div style={{ display:"flex",flexWrap:"wrap",gap:10,padding:"8px 20px",borderBottom:`1px solid ${bd}`,alignItems:"center",background:"rgba(255,255,255,0.01)" }}>
-        {dates.length > 0 && (
-          <div style={{ flex:1, minWidth:320 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
-              <div style={{ fontSize:8,color:dim,textTransform:"uppercase",letterSpacing:"0.1em" }}>Dátum</div>
-              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                {isForecast && (
-                  <span style={{ fontSize:9, color:"#fbbf24", background:"rgba(251,191,36,0.1)", border:"1px solid rgba(251,191,36,0.3)", borderRadius:4, padding:"1px 6px" }}>
-                    📡 Előrejelzés
-                  </span>
-                )}
-                <span style={{ fontSize:12, fontFamily:"monospace", color: isForecast ? "#fbbf24" : "#e8e4dc", fontWeight:600 }}>
-                  {date}
+        {/* ── DÁTUMVÁLASZTÓ NAPTÁR ── */}
+        {(dates.length > 0 || forecastDates.length > 0) && (() => {
+          const today = new Date().toISOString().split("T")[0];
+          const allDates = [...dates].reverse(); // múlt: régebbi → újabb
+          const fDates = forecastDates;
+
+          return (
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:8, color:dim, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:5 }}>
+                Dátum
+                <span style={{ marginLeft:8, fontWeight:600, fontFamily:"monospace", color: isForecast ? "#fbbf24" : "#e8e4dc", fontSize:11 }}>
+                  {date} {isForecast && "📡"}
                 </span>
               </div>
+              <div style={{ display:"flex", gap:3, flexWrap:"wrap", alignItems:"center" }}>
+                {/* Múltbeli napok */}
+                {allDates.map(d => (
+                  <button key={d} onClick={() => setDate(d)} style={{
+                    padding:"3px 7px", borderRadius:4, cursor:"pointer",
+                    fontSize:10, fontFamily:"monospace",
+                    fontWeight: date===d ? 700 : 400,
+                    background: date===d ? "rgba(200,64,32,0.35)" : "rgba(255,255,255,0.05)",
+                    color: date===d ? "#f0ece4" : dim,
+                    border: `1px solid ${date===d ? "rgba(200,64,32,0.6)" : "rgba(255,255,255,0.08)"}`,
+                    transition:"all 0.15s",
+                  }}>
+                    {d.slice(5)} {/* MM-DD */}
+                  </button>
+                ))}
+
+                {/* Elválasztó */}
+                {allDates.length > 0 && fDates.length > 0 && (
+                  <div style={{ width:1, height:20, background:"rgba(255,255,255,0.15)", margin:"0 3px" }}/>
+                )}
+
+                {/* Előrejelzés napok */}
+                {fDates.map((d, i) => (
+                  <button key={d} onClick={() => setDate(d)} style={{
+                    padding:"3px 7px", borderRadius:4, cursor:"pointer",
+                    fontSize:10, fontFamily:"monospace",
+                    fontWeight: date===d ? 700 : 400,
+                    background: date===d ? "rgba(251,191,36,0.25)" : "rgba(251,191,36,0.06)",
+                    color: date===d ? "#fbbf24" : "rgba(251,191,36,0.55)",
+                    border: `1px solid ${date===d ? "rgba(251,191,36,0.5)" : "rgba(251,191,36,0.15)"}`,
+                    transition:"all 0.15s",
+                  }}>
+                    +{i+1}d
+                  </button>
+                ))}
+              </div>
+              {/* Jelmagyarázat */}
+              <div style={{ display:"flex", gap:12, marginTop:4, fontSize:8, color:dim }}>
+                <span>
+                  <span style={{ display:"inline-block", width:8, height:8, borderRadius:2, background:"rgba(200,64,32,0.35)", border:"1px solid rgba(200,64,32,0.6)", marginRight:3 }}/>
+                  Mért adat ({allDates.length} nap)
+                </span>
+                {fDates.length > 0 && (
+                  <span>
+                    <span style={{ display:"inline-block", width:8, height:8, borderRadius:2, background:"rgba(251,191,36,0.2)", border:"1px solid rgba(251,191,36,0.4)", marginRight:3 }}/>
+                    Előrejelzés (OpenMeteo)
+                  </span>
+                )}
+              </div>
             </div>
-            {/* Összevont csúszka: múlt + előrejelzés */}
-            {(() => {
-              const allDates = [...dates].reverse().concat(forecastDates);
-              const curIdx = allDates.indexOf(date);
-              const histCount = dates.length;
-              return (
-                <div>
-                  <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                    <span style={{ fontSize:9, color:dim, whiteSpace:"nowrap" }}>{allDates[0]}</span>
-                    <div style={{ flex:1, position:"relative" }}>
-                      {/* Háttér: múlt vs jövő */}
-                      <div style={{ position:"absolute", top:"50%", left:0, right:0, height:4, transform:"translateY(-50%)", borderRadius:2, overflow:"hidden", display:"flex" }}>
-                        <div style={{ flex:histCount, background:"rgba(200,64,32,0.35)" }}/>
-                        <div style={{ width:2, background:"rgba(255,255,255,0.4)" }}/>
-                        <div style={{ flex:forecastDates.length, background:"rgba(251,191,36,0.25)" }}/>
-                      </div>
-                      <input
-                        type="range"
-                        min={0}
-                        max={allDates.length - 1}
-                        value={Math.max(0, curIdx)}
-                        onChange={e => setDate(allDates[parseInt(e.target.value)])}
-                        style={{ width:"100%", accentColor: isForecast ? "#fbbf24" : "#c84020", cursor:"pointer", position:"relative", zIndex:1, background:"transparent" }}
-                      />
-                    </div>
-                    <span style={{ fontSize:9, color:"#fbbf24", whiteSpace:"nowrap" }}>+3 nap</span>
-                  </div>
-                  {/* Felirat sor */}
-                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:8, color:dim, marginTop:2, paddingLeft:2, paddingRight:2 }}>
-                    <span>← Múlt ({dates.length} nap)</span>
-                    <span style={{ color:"rgba(255,255,255,0.25)" }}>│ Ma │</span>
-                    <span style={{ color:"rgba(251,191,36,0.6)" }}>Előrejelzés →</span>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        )}
+          );
+        })()}
         <div>
           <div style={{ fontSize:8,color:dim,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:3 }}>Modell</div>
           <div style={{ display:"flex" }}>
