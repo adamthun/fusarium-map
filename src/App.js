@@ -191,9 +191,11 @@ export default function App() {
 
   // OpenMeteo előrejelzés betöltése az összes állomásra
   useEffect(() => {
-    const today = new Date();
-    const futureDates = [1,2,3].map(i => {
-      const d = new Date(today);
+    const todayStr = new Date().toISOString().split("T")[0];
+    // today + 3 nap előrejelzés
+    // A today-t is beletesszük — ha nincs még kiszámítva (reggel 6 előtt), előrejelzésként mutatjuk
+    const futureDates = [0,1,2,3].map(i => {
+      const d = new Date();
       d.setDate(d.getDate() + i);
       return d.toISOString().split("T")[0];
     });
@@ -249,8 +251,9 @@ export default function App() {
 
   // Dátum váltáskor figyeljük meg, hogy előrejelzés-e
   useEffect(() => {
-    setIsForecast(forecastDates.includes(date));
-  }, [date, forecastDates]);
+    // Csak akkor előrejelzés, ha NEM szerepel a valós adatok között
+    setIsForecast(forecastDates.includes(date) && !dates.includes(date));
+  }, [date, forecastDates, dates]);
 
   useEffect(() => {
     let cancelled = false;

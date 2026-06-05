@@ -51,10 +51,12 @@ STATION_COORDS = {
 }
 
 # Fusarium szezon: április 1. – október 31.
+import datetime as _dt
+_today = _dt.date.today().isoformat()
 SEASONS = {
     2024: ("2024-04-01", "2024-10-31"),
     2025: ("2025-04-01", "2025-10-31"),
-    2026: ("2026-04-01", "2026-10-31"),
+    2026: ("2026-04-01", _today),  # folyamatosan bővül
 }
 
 logging.basicConfig(
