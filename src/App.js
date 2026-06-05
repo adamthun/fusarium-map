@@ -1,6 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { MapContainer, TileLayer, CircleMarker, Tooltip, useMap } from "react-leaflet";
-import "leaflet/dist/leaflet.css";
 
 // ══════════════════════════════════════════════════════════════
 // FUSARIUM FERTŐZÉSI KOCKÁZAT BECSLŐ — v2
@@ -16,6 +14,7 @@ const SUPABASE_URL  = process.env.REACT_APP_SUPABASE_URL  || "https://daelyokksh
 const SUPABASE_ANON = process.env.REACT_APP_SUPABASE_ANON_KEY || "";
 const EDGE_FN       = `${SUPABASE_URL}/functions/v1/fusarium-api`;
 
+// 30 állomás – országos monitoring hálózat
 const STATIONS = [
   {id:44309,nm:"Szeged",             lat:46.2561,lon:20.0900,county:"Csongrád-Csanád",   r:"alfold",  w:true},
   {id:44206,nm:"Kecskemét",          lat:46.9167,lon:19.7500,county:"Bács-Kiskun",        r:"alfold",  w:true},
@@ -49,86 +48,19 @@ const STATIONS = [
   {id:32805,nm:"Tésa",               lat:48.0269,lon:18.8256,county:"Pest",               r:"eszak",   w:false},
 ];
 
-// ── OpenMeteo API: 4 napos óránkénti előrejelzés egy állomásra ──
-// Forrás: open-meteo.com — CC BY 4.0, kulcs nélküli
-async function fetchForecast(lat, lon) {
-  const params = new URLSearchParams({
-    latitude: lat.toFixed(4),
-    longitude: lon.toFixed(4),
-    hourly: "temperature_2m,relativehumidity_2m,precipitation_probability",
-    forecast_days: 4,
-    timezone: "Europe/Budapest",
-    wind_speed_unit: "ms",
-  });
-  const r = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
-  if (!r.ok) throw new Error("OpenMeteo hiba");
-  return r.json();
-}
-
-// TRH9010 számítás óránkénti tömbből (7 napos ablak = 168 óra)
-function calcTRH9010fromHours(temps, rhs) {
-  let consec = 0, maxConsec = 0;
-  for (let i = 0; i < temps.length; i++) {
-    if (rhs[i] > 90 && temps[i] >= 15 && temps[i] <= 30) {
-      consec++;
-      maxConsec = Math.max(maxConsec, consec);
-    } else consec = 0;
-  }
-  const p = -3.3756 + 6.8128 * maxConsec;
-  return { trh: maxConsec, p: Math.max(0, Math.min(100, p)) };
-}
-
-// Optimista/pesszimista változat csapadékvalószínűség alapján
-// Ha magas a csapadékvalószínűség → magasabb RH várható → pesszimista
-function calcForecastBand(temps, rhs, precipProbs) {
-  // Pesszimista: ahol csapadék >40%, ott RH-t +5%-kal növeljük
-  const rhPess = rhs.map((rh, i) => precipProbs[i] > 40 ? Math.min(100, rh + 8) : rh);
-  // Optimista: ahol csapadék <30%, ott RH-t -5%-kal csökkentjük  
-  const rhOpt  = rhs.map((rh, i) => precipProbs[i] < 30 ? Math.max(0, rh - 8) : rh);
-  const base = calcTRH9010fromHours(temps, rhs);
-  const pess = calcTRH9010fromHours(temps, rhPess);
-  const opt  = calcTRH9010fromHours(temps, rhOpt);
-  return { p: base.p, pMin: opt.p, pMax: pess.p, trh: base.trh };
-}
-
-async function apiFetch(params) {
-  const qs = new URLSearchParams(params).toString();
-  const r = await fetch(`${EDGE_FN}?${qs}`, {
-    headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` }
-  });
-  if (!r.ok) throw new Error(`API ${r.status}`);
-  return r.json();
-}
-
-function demoData(date, model) {
-  const h = s => { let x=0; for(let c of s) x=Math.imul(31,x)+c.charCodeAt(0); return x>>>0; };
-  return STATIONS.map(s => {
-    const base = s.lon < 18 ? 45 : s.lon < 20 ? 22 : 12;
-    const noise = (h(String(s.id)+date) % 1000)/1000*55 - 10;
-    const p = Math.max(0, Math.min(100, base+noise+(model===2?8:0)));
-    return { ...s, p:+p.toFixed(1),
-      th: model===1 ? Math.round(p/6.8) : null,
-      iv: model===2 ? +(p/10.5).toFixed(2) : null };
-  }).sort((a,b)=>b.p-a.p);
-}
+const HU = { minLat:45.7, maxLat:48.65, minLon:16.0, maxLon:23.1 };
+const MW = 540, MH = 320;
+function lx(lon) { return ((lon-HU.minLon)/(HU.maxLon-HU.minLon))*MW; }
+function ly(lat) { return ((HU.maxLat-lat)/(HU.maxLat-HU.minLat))*MH; }
 
 function rc(p) {
-  if (p<=0)  return "#16a34a";
-  if (p<=10) return "#22c55e";
-  if (p<=25) return "#a3e635";
-  if (p<=40) return "#eab308";
-  if (p<=60) return "#f97316";
-  if (p<=80) return "#ef4444";
-  return "#991b1b";
-}
-function rcLeaflet(p) {
-  if (p<=0)  return {color:"#16a34a",fill:"#16a34a"};
-  if (p<=10) return {color:"#22c55e",fill:"#22c55e"};
-  if (p<=25) return {color:"#84cc16",fill:"#84cc16"};
-  if (p<=40) return {color:"#eab308",fill:"#eab308"};
-  if (p<=60) return {color:"#f97316",fill:"#f97316"};
-  if (p<=80) return {color:"#ef4444",fill:"#ef4444"};
-  return {color:"#991b1b",fill:"#7f1d1d"};
+  if (p<=0)  return "#16502e";
+  if (p<=10) return "#2e7d35";
+  if (p<=25) return "#72a82e";
+  if (p<=40) return "#c8b820";
+  if (p<=60) return "#d97820";
+  if (p<=80) return "#c03518";
+  return "#8b1010";
 }
 function rl(p) {
   if (p<=0)  return "Nincs";
@@ -146,112 +78,68 @@ function re(p) {
   if (p<=60) return "🔴";
   return "⛔";
 }
+function advice(p) {
+  if (p<=0)  return "Nincs fertőzési körülmény";
+  if (p<=10) return "Minimális — nem indokol beavatkozást";
+  if (p<=25) return "Mérsékelt — figyelemmel kísérés javasolt";
+  if (p<=40) return "Közepes — fontoljon meg gombaölőszert";
+  if (p<=60) return "Magas — gombaölőszer-kezelés indokolt";
+  if (p<=80) return "Veszélyes — azonnali védekezés szükséges";
+  return "Kritikus — azonnali beavatkozás!";
+}
 
+// Supabase Edge Function hívás
+async function apiFetch(params) {
+  const qs = new URLSearchParams(params).toString();
+  const r = await fetch(`${EDGE_FN}?${qs}`, {
+    headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` }
+  });
+  if (!r.ok) throw new Error(`API ${r.status}`);
+  return r.json();
+}
 
-// Alaptérkép típus váltó komponens
-function TileLayerSwitcher({ mapStyle }) {
-  const map = useMap();
-  useEffect(() => { map.invalidateSize(); }, [map, mapStyle]);
-  
-  const tiles = {
-    osm: { url:"https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attr:"© OpenStreetMap" },
-    satellite: { url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attr:"© Esri" },
-    topo: { url:"https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", attr:"© OpenTopoMap" },
-    dark: { url:"https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png", attr:"© Stadia Maps" },
-  };
-  const t = tiles[mapStyle] || tiles.osm;
-  return <TileLayer url={t.url} attribution={t.attr} />;
+// Demo fallback ha nincs adat
+function demoData(date, model) {
+  const h = s => { let x=0; for(let c of s) x=Math.imul(31,x)+c.charCodeAt(0); return x>>>0; };
+  return STATIONS.map(s => {
+    const base = s.lon < 18 ? 45 : s.lon < 20 ? 22 : 12;
+    const noise = (h(String(s.id)+date) % 1000)/1000*55 - 10;
+    const p = Math.max(0, Math.min(100, base+noise+(model===2?8:0)));
+    return { ...s, p:+p.toFixed(1),
+      th: model===1 ? Math.round(p/6.8) : null,
+      iv: model===2 ? +(p/10.5).toFixed(2) : null,
+      obs_count: 168 };
+  }).sort((a,b)=>b.p-a.p);
 }
 
 export default function App() {
   const today = new Date().toISOString().split("T")[0];
-  const [date, setDate]       = useState(today);
-  const [model, setModel]     = useState(1);
-  const [data, setData]       = useState([]);
-  const [dates, setDates]     = useState([today]);
+  const [date, setDate]     = useState(today);
+  const [model, setModel]   = useState(1);
+  const [data, setData]     = useState([]);
+  const [dates, setDates]   = useState([today]);
   const [loading, setLoading] = useState(true);
-  const [src, setSrc]         = useState("loading");
-  const [lastUp, setLastUp]   = useState(null);
+  const [src, setSrc]       = useState("loading");
+  const [lastUp, setLastUp] = useState(null);
+  const [hover, setHover]   = useState(null);
   const [tab, setTab]         = useState("map");
   const [region, setRegion]   = useState("all");
   const [mapStyle, setMapStyle] = useState("osm");
   const [showHeat, setShowHeat] = useState(true);
-  const [forecast, setForecast] = useState({}); // {date: [{station_id, p, pMin, pMax}]}
-  const [forecastDates, setForecastDates] = useState([]); // jövő dátumok
+  const [forecast, setForecast] = useState({});
+  const [forecastDates, setForecastDates] = useState([]);
   const [isForecast, setIsForecast] = useState(false);
   const [selYear, setSelYear] = useState(new Date().getFullYear());
-  const [selMonth, setSelMonth] = useState(new Date().getMonth()); // 0-indexed
+  const [selMonth, setSelMonth] = useState(new Date().getMonth());
 
-  // Elérhető múltbeli dátumok
+  // Elérhető dátumok betöltése
   useEffect(() => {
     apiFetch({ action:"dates" })
       .then(r => { if (r.dates?.length) { setDates(r.dates); setDate(r.dates[0]); } })
       .catch(() => {});
   }, []);
 
-  // OpenMeteo előrejelzés betöltése az összes állomásra
-  useEffect(() => {
-    const today = new Date();
-    const futureDates = [1,2,3].map(i => {
-      const d = new Date(today);
-      d.setDate(d.getDate() + i);
-      return d.toISOString().split("T")[0];
-    });
-    setForecastDates(futureDates);
-
-    // Párhuzamos lekérdezés az összes állomásra
-    // Throttolva, hogy ne terhelje az API-t
-    const results = {};
-    futureDates.forEach(d => { results[d] = []; });
-
-    let idx = 0;
-    const batchSize = 5;
-    
-    async function fetchBatch() {
-      const batch = STATIONS.slice(idx, idx + batchSize);
-      if (batch.length === 0) {
-        setForecast({...results});
-        return;
-      }
-      idx += batchSize;
-
-      await Promise.allSettled(batch.map(async (s) => {
-        try {
-          const d = await fetchForecast(s.lat, s.lon);
-          const times = d.hourly.time;
-          const temps = d.hourly.temperature_2m;
-          const rhs   = d.hourly.relativehumidity_2m;
-          const probs = d.hourly.precipitation_probability;
-
-          futureDates.forEach((fdate, fi) => {
-            // Az adott nap + előző 6 nap óráit vesszük (7 napos ablak)
-            const dayStart = times.findIndex(t => t.startsWith(fdate));
-            if (dayStart === -1) return;
-            // Vegyük az összes elérhető előre jelzett órát (max 96h)
-            const windowEnd = Math.min(dayStart + 24, times.length);
-            const windowStart = Math.max(0, dayStart - (7 * 24 - 24));
-            const wTemps = temps.slice(windowStart, windowEnd);
-            const wRhs   = rhs.slice(windowStart, windowEnd);
-            const wProbs = probs.slice(windowStart, windowEnd);
-
-            const band = calcForecastBand(wTemps, wRhs, wProbs);
-            results[fdate].push({ ...s, ...band });
-          });
-        } catch(e) {
-          // Ha egy állomás nem tölt be, kihagyjuk
-        }
-      }));
-
-      setTimeout(fetchBatch, 200); // 200ms között kötegek
-    }
-    fetchBatch();
-  }, []);
-
-  // Dátum váltáskor figyeljük meg, hogy előrejelzés-e
-  useEffect(() => {
-    setIsForecast(forecastDates.includes(date));
-  }, [date, forecastDates]);
-
+  // Kockázati adatok betöltése
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -259,14 +147,14 @@ export default function App() {
       .then(r => {
         if (cancelled) return;
         if (r.data?.length > 0) {
+          // Supabase adatok + az összes állomás koordinátájával kiegészítve
           const byId = Object.fromEntries(r.data.map(d => [d.station_id, d]));
           const merged = STATIONS.map(s => {
             const db = byId[s.id];
             if (!db) return null;
-            return { ...s, p:+db.risk_pct,
-              th:db.trh9010_hours?+db.trh9010_hours:null,
-              iv:db.int3_value?+db.int3_value:null,
-              obs_count:db.obs_count };
+            return { ...s, p:+db.risk_pct, th:db.trh9010_hours?+db.trh9010_hours:null,
+              iv:db.int3_value?+db.int3_value:null, obs_count:db.obs_count,
+              calc_date:db.calc_date };
           }).filter(Boolean).sort((a,b)=>b.p-a.p);
           setData(merged.length > 0 ? merged : demoData(date, model));
           setSrc(merged.length > 0 ? "live" : "demo");
@@ -283,187 +171,365 @@ export default function App() {
     return () => { cancelled = true; };
   }, [date, model]);
 
-  // Ha előrejelzés napot nézünk, az OpenMeteo adatot használjuk
-  const activeData = (isForecast && forecast[date]?.length > 0)
-    ? forecast[date]
-    : data;
+  const filtered = region==="all" ? data : data.filter(s=>s.r===region);
+  const maxR = data.length ? Math.max(...data.map(d=>d.p)) : 0;
+  const avgR = data.length ? data.reduce((s,d)=>s+d.p,0)/data.length : 0;
+  const hi   = data.filter(d=>d.p>=60).length;
 
-  const filtered = region==="all" ? activeData : activeData.filter(s=>s.r===region);
-  const maxR = activeData.length ? Math.max(...activeData.map(d=>d.p)) : 0;
-  const avgR = activeData.length ? activeData.reduce((s,d)=>s+d.p,0)/activeData.length : 0;
-  const hi   = activeData.filter(d=>d.p>=60).length;
-
-  const bd  = "rgba(255,255,255,0.07)";
-  const dim = "rgba(232,228,220,0.38)";
+  const bd  = "rgba(255,255,255,0.06)";
+  const dim = "rgba(232,228,220,0.35)";
   const mid = "rgba(232,228,220,0.6)";
 
   return (
     <div style={{ fontFamily:"Georgia,serif", background:"#090d18", minHeight:"100vh", color:"#e8e4dc" }}>
 
       {/* HEADER */}
-      <div style={{ padding:"12px 20px 8px", background:"linear-gradient(90deg,rgba(180,40,20,0.1),rgba(50,110,30,0.06))", borderBottom:`1px solid ${bd}` }}>
+      <div style={{ padding:"14px 20px 10px", background:"linear-gradient(90deg,rgba(180,40,20,0.1),rgba(50,110,30,0.06))", borderBottom:`1px solid ${bd}` }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <img
-          src="https://uni-mate.hu/o/mate-theme/images/mate_symbol_white.png"
-          alt="MATE"
-          style={{ height:38, width:"auto", flexShrink:0 }}
-          onError={e => { e.target.style.display="none"; }}
-        />
+          <div style={{ width:36,height:36,borderRadius:"50%",background:"linear-gradient(135deg,#c04020,#d4a020)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,color:"#fff",fontSize:14 }}>Fz</div>
           <div>
-            <div style={{ fontSize:18,fontWeight:700 }}>Fusarium Kockázati Térkép</div>
+            <div style={{ fontSize:19,fontWeight:700 }}>Fusarium Kockázati Térkép</div>
             <div style={{ fontSize:10,color:dim,letterSpacing:"0.08em",textTransform:"uppercase" }}>
               Magyarország · 30 OMSZ állomás · HungaroMet ODP
-
+              {src==="live" && <span style={{ color:"#4a8c2b",marginLeft:6 }}>● ÉLŐ ADAT</span>}
+              {src==="demo" && <span style={{ color:"#b07020",marginLeft:6 }}>● DEMO MÓD</span>}
+              {loading      && <span style={{ color:"#507090",marginLeft:6 }}>● Betöltés...</span>}
             </div>
           </div>
           {lastUp && (
             <div style={{ marginLeft:"auto",fontSize:10,color:dim,textAlign:"right" }}>
-              Frissítve: <span style={{ fontFamily:"monospace" }}>{new Date(lastUp).toLocaleString("hu-HU")}</span>
+              Frissítve<br/>
+              <span style={{ color:"#4a8c2b",fontFamily:"monospace" }}>
+                {new Date(lastUp).toLocaleString("hu-HU")}
+              </span>
             </div>
           )}
         </div>
       </div>
 
       {/* STATISZTIKA */}
-      <div style={{ display:"flex",gap:1,borderBottom:`1px solid ${bd}` }}>
+      <div style={{ display:"flex",gap:6,padding:"8px 20px" }}>
         {[
           {l:"Max kockázat",v:`${maxR.toFixed(0)}%`,c:rc(maxR)},
           {l:"Átlag",v:`${avgR.toFixed(1)}%`,c:rc(avgR)},
-          {l:"Veszélyes (≥60%)",v:`${hi} db`,c:hi>0?"#ef4444":"#22c55e"},
+          {l:"Veszélyes+",v:`${hi} db`,c:hi>0?"#c84020":"#4a8c2b"},
           {l:"Állomások",v:`${data.length}/30`,c:"#6a7a8a"},
         ].map((c,i)=>(
-          <div key={i} style={{ flex:1,padding:"6px 14px",borderRight:i<3?`1px solid ${bd}`:"none" }}>
-            <div style={{ fontSize:8,textTransform:"uppercase",letterSpacing:"0.09em",color:dim,marginBottom:1 }}>{c.l}</div>
-            <div style={{ fontSize:18,fontWeight:700,color:c.c,fontFamily:"monospace" }}>{c.v}</div>
+          <div key={i} style={{ flex:1,background:"rgba(255,255,255,0.03)",borderRadius:6,padding:"5px 10px",border:`1px solid ${bd}` }}>
+            <div style={{ fontSize:8,textTransform:"uppercase",letterSpacing:"0.09em",color:dim }}>{c.l}</div>
+            <div style={{ fontSize:16,fontWeight:700,color:c.c,fontFamily:"monospace" }}>{c.v}</div>
           </div>
         ))}
       </div>
 
       {/* KONTROLLOK */}
-      <div style={{ display:"flex",flexWrap:"wrap",gap:10,padding:"8px 20px",borderBottom:`1px solid ${bd}`,alignItems:"center",background:"rgba(255,255,255,0.01)" }}>
-        {/* ── SZEZON NAPTÁR ── */}
+      <div style={{ display:"flex",flexWrap:"wrap",gap:10,padding:"6px 20px 10px",borderBottom:`1px solid ${bd}`,alignItems:"flex-end" }}>
+        {/* SZEZON NAPTÁR */}
         {(() => {
           const today = new Date().toISOString().split("T")[0];
-          const currentYear = new Date().getFullYear();
-          const years = [currentYear-2, currentYear-1, currentYear];
-          const seasonMonths = [3,4,5,6,7,8,9]; // ápr–okt
-          const monthNames = ["Jan","Feb","Már","Ápr","Máj","Jún","Júl","Aug","Sze","Okt","Nov","Dec"];
-
-          // Az adott hónap napjainak listája
-          const getDaysInMonth = (year, month) => {
-            const days = [];
-            const daysInMonth = new Date(year, month+1, 0).getDate();
-            for (let d = 1; d <= daysInMonth; d++) {
-              const ds = `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-              days.push(ds);
-            }
+          const cur = new Date().getFullYear();
+          const years = [cur-2, cur-1, cur];
+          const sMons = [3,4,5,6,7,8,9]; // ápr–okt
+          const mNames = ["Jan","Feb","Már","Ápr","Máj","Jún","Júl","Aug","Sze","Okt","Nov","Dec"];
+          const getDays = (y,m) => {
+            const days=[], n=new Date(y,m+1,0).getDate();
+            for(let d=1;d<=n;d++) days.push(`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`);
             return days;
           };
-
-          const monthDays = getDaysInMonth(selYear, selMonth);
-          const firstDow = new Date(selYear, selMonth, 1).getDay(); // 0=vasárnap
-          const firstMon = firstDow === 0 ? 6 : firstDow - 1; // hétfőtől
-
+          const mDays = getDays(selYear, selMonth);
+          const firstMon = ((new Date(selYear,selMonth,1).getDay())+6)%7;
           return (
-            <div style={{ minWidth:260 }}>
-              {/* Év választó */}
-              <div style={{ display:"flex", gap:4, marginBottom:6, alignItems:"center" }}>
-                <span style={{ fontSize:8, color:dim, textTransform:"uppercase", letterSpacing:"0.1em", marginRight:4 }}>Szezon</span>
-                {years.map(y => (
-                  <button key={y} onClick={() => { setSelYear(y); setSelMonth(4); }} style={{
-                    padding:"2px 8px", borderRadius:4, cursor:"pointer", fontSize:11,
-                    fontFamily:"monospace", fontWeight: selYear===y ? 700 : 400,
-                    background: selYear===y ? "rgba(200,64,32,0.3)" : "rgba(255,255,255,0.05)",
-                    color: selYear===y ? "#f0ece4" : dim,
-                    border: `1px solid ${selYear===y ? "rgba(200,64,32,0.5)" : "rgba(255,255,255,0.08)"}`,
+            <div style={{ minWidth:220 }}>
+              {/* Év */}
+              <div style={{ display:"flex", gap:3, marginBottom:5, alignItems:"center" }}>
+                <span style={{ fontSize:8,color:dim,textTransform:"uppercase",letterSpacing:"0.1em",marginRight:3 }}>Szezon</span>
+                {years.map(y=>(
+                  <button key={y} onClick={()=>{setSelYear(y);setSelMonth(4);}} style={{
+                    padding:"2px 7px",borderRadius:4,cursor:"pointer",fontSize:11,fontFamily:"monospace",
+                    fontWeight:selYear===y?700:400,
+                    background:selYear===y?"rgba(200,64,32,0.3)":"rgba(255,255,255,0.05)",
+                    color:selYear===y?"#f0ece4":dim,
+                    border:`1px solid ${selYear===y?"rgba(200,64,32,0.5)":"rgba(255,255,255,0.08)"}`,
                   }}>{y}</button>
                 ))}
               </div>
-
-              {/* Hónap választó — csak ápr–okt */}
-              <div style={{ display:"flex", gap:2, marginBottom:6 }}>
-                {seasonMonths.map(m => {
-                  const hasDates = dates.some(d => d.startsWith(`${selYear}-${String(m+1).padStart(2,"0")}`));
-                  const hasForecast = forecastDates.some(d => d.startsWith(`${selYear}-${String(m+1).padStart(2,"0")}`));
-                  const isSelected = selMonth === m;
+              {/* Hónap */}
+              <div style={{ display:"flex", gap:2, marginBottom:5 }}>
+                {sMons.map(m=>{
+                  const has = dates.some(d=>d.startsWith(`${selYear}-${String(m+1).padStart(2,"0")}`));
+                  const hasFc = forecastDates.some(d=>d.startsWith(`${selYear}-${String(m+1).padStart(2,"0")}`));
                   return (
-                    <button key={m} onClick={() => setSelMonth(m)} style={{
-                      padding:"2px 6px", borderRadius:4, cursor:"pointer", fontSize:10,
-                      fontWeight: isSelected ? 700 : 400,
-                      background: isSelected ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.04)",
-                      color: isSelected ? "#f0ece4" : hasDates ? dim : "rgba(255,255,255,0.2)",
-                      border: `1px solid ${isSelected ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.07)"}`,
-                      position:"relative",
+                    <button key={m} onClick={()=>setSelMonth(m)} style={{
+                      padding:"2px 5px",borderRadius:4,cursor:"pointer",fontSize:9,
+                      fontWeight:selMonth===m?700:400,position:"relative",
+                      background:selMonth===m?"rgba(255,255,255,0.12)":"rgba(255,255,255,0.04)",
+                      color:selMonth===m?"#f0ece4":has||hasFc?dim:"rgba(255,255,255,0.2)",
+                      border:`1px solid ${selMonth===m?"rgba(255,255,255,0.25)":"rgba(255,255,255,0.07)"}`,
                     }}>
-                      {monthNames[m]}
-                      {(hasDates || hasForecast) && (
-                        <span style={{
-                          position:"absolute", top:1, right:1,
-                          width:4, height:4, borderRadius:"50%",
-                          background: hasForecast ? "#fbbf24" : "#4a8c2b",
-                        }}/>
-                      )}
+                      {mNames[m]}
+                      {(has||hasFc)&&<span style={{ position:"absolute",top:1,right:1,width:3,height:3,borderRadius:"50%",background:hasFc?"#fbbf24":"#4a8c2b" }}/>}
                     </button>
                   );
                 })}
               </div>
-
-              {/* Nap nézet — heti rács */}
-              <div>
-                {/* Fejléc */}
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:1, marginBottom:2 }}>
-                  {["H","K","Sz","Cs","P","Szo","V"].map(d => (
-                    <div key={d} style={{ textAlign:"center", fontSize:8, color:"rgba(255,255,255,0.25)" }}>{d}</div>
-                  ))}
-                </div>
-                {/* Napok */}
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:1 }}>
-                  {/* Üres cellák a hónap eleje előtt */}
-                  {Array(firstMon).fill(null).map((_,i) => (
-                    <div key={`empty-${i}`}/>
-                  ))}
-                  {monthDays.map(d => {
-                    const hasData = dates.includes(d);
-                    const isFcast = forecastDates.includes(d);
-                    const isSelected = date === d;
-                    const isFuture = d > today;
-                    const dayNum = parseInt(d.slice(8));
-                    return (
-                      <button key={d}
-                        onClick={() => (hasData || isFcast) && setDate(d)}
-                        disabled={!hasData && !isFcast}
-                        style={{
-                          padding:"3px 0", borderRadius:3, cursor: (hasData||isFcast) ? "pointer" : "default",
-                          fontSize:9, textAlign:"center", fontFamily:"monospace",
-                          background: isSelected
-                            ? (isFcast ? "rgba(251,191,36,0.35)" : "rgba(200,64,32,0.4)")
-                            : hasData ? "rgba(74,140,43,0.15)"
-                            : isFcast ? "rgba(251,191,36,0.08)"
-                            : "transparent",
-                          color: isSelected ? "#f0ece4"
-                            : hasData ? "#a0d070"
-                            : isFcast ? "rgba(251,191,36,0.7)"
-                            : "rgba(255,255,255,0.15)",
-                          border: `1px solid ${isSelected
-                            ? (isFcast ? "rgba(251,191,36,0.6)" : "rgba(200,64,32,0.6)")
-                            : hasData ? "rgba(74,140,43,0.3)"
-                            : isFcast ? "rgba(251,191,36,0.2)"
-                            : "transparent"}`,
-                          fontWeight: isSelected ? 700 : 400,
-                        }}>
-                        {dayNum}
-                      </button>
-                    );
-                  })}
-                </div>
+              {/* Napok */}
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:2 }}>
+                {["H","K","Sz","Cs","P","Sz","V"].map((d,i)=>(
+                  <div key={i} style={{ textAlign:"center",fontSize:7,color:"rgba(255,255,255,0.2)" }}>{d}</div>
+                ))}
               </div>
-
-              {/* Jelmagyarázat */}
-              <div style={{ display:"flex", gap:10, marginTop:5, fontSize:8, color:dim }}>
-                <span><span style={{ display:"inline-block",width:6,height:6,borderRadius:"50%",background:"#4a8c2b",marginRight:2 }}/>Mért</span>
-                <span><span style={{ display:"inline-block",width:6,height:6,borderRadius:"50%",background:"#fbbf24",marginRight:2 }}/>Előrejelzés</span>
-                <span style={{ marginLeft:"auto", fontFamily:"monospace", color: isForecast ? "#fbbf24" : "#a0d070", fontWeight:600 }}>{date}</span>
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1 }}>
+                {Array(firstMon).fill(null).map((_,i)=><div key={`e${i}`}/>)}
+                {mDays.map(d=>{
+                  const has=dates.includes(d), isFc=forecastDates.includes(d), isSel=date===d;
+                  const dn=parseInt(d.slice(8));
+                  return (
+                    <button key={d} onClick={()=>(has||isFc)&&setDate(d)} disabled={!has&&!isFc} style={{
+                      padding:"3px 0",borderRadius:3,textAlign:"center",fontSize:9,fontFamily:"monospace",
+                      cursor:(has||isFc)?"pointer":"default",
+                      background:isSel?(isFc?"rgba(251,191,36,0.35)":"rgba(200,64,32,0.4)"):has?"rgba(74,140,43,0.15)":isFc?"rgba(251,191,36,0.08)":"transparent",
+                      color:isSel?"#f0ece4":has?"#a0d070":isFc?"rgba(251,191,36,0.7)":"rgba(255,255,255,0.12)",
+                      border:`1px solid ${isSel?(isFc?"rgba(251,191,36,0.6)":"rgba(200,64,32,0.6)"):has?"rgba(74,140,43,0.3)":isFc?"rgba(251,191,36,0.2)":"transparent"}`,
+                      fontWeight:isSel?700:400,
+                    }}>{dn}</button>
+                  );
+                })}
+              </div>
+              <div style={{ display:"flex",gap:8,marginTop:4,fontSize:8,color:dim }}>
+                <span><span style={{ display:"inline-block",width:5,height:5,borderRadius:"50%",background:"#4a8c2b",marginRight:2 }}/>Mért</span>
+                <span><span style={{ display:"inline-block",width:5,height:5,borderRadius:"50%",background:"#fbbf24",marginRight:2 }}/>Előrejelzés</span>
+                <span style={{ marginLeft:"auto",fontFamily:"monospace",color:isForecast?"#fbbf24":"#a0d070",fontWeight:600,fontSize:9 }}>{date}</span>
               </div>
             </div>
           );
         })()}
+        <div>
+          <div style={{ fontSize:8,color:dim,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:3 }}>Modell</div>
+          <div style={{ display:"flex" }}>
+            {[{id:1,l:"① TRH9010"},{id:2,l:"② INT3"}].map(m=>(
+              <button key={m.id} onClick={()=>setModel(m.id)} style={{
+                padding:"5px 12px",fontSize:11,fontFamily:"inherit",cursor:"pointer",
+                background:model===m.id?"rgba(180,40,20,0.3)":"rgba(255,255,255,0.04)",
+                color:model===m.id?"#e8e4dc":mid,
+                border:`1px solid ${model===m.id?"rgba(180,40,20,0.5)":bd}`,
+                borderRadius:m.id===1?"5px 0 0 5px":"0 5px 5px 0",
+                fontWeight:model===m.id?700:400,
+              }}>{m.l}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize:8,color:dim,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:3 }}>Régió</div>
+          <select value={region} onChange={e=>setRegion(e.target.value)}
+            style={{ background:"rgba(255,255,255,0.04)",border:`1px solid ${bd}`,borderRadius:5,padding:"5px 8px",color:"#e8e4dc",fontSize:12,fontFamily:"monospace" }}>
+            <option value="all" style={{background:"#0d1525"}}>Összes</option>
+            <option value="alfold" style={{background:"#0d1525"}}>Nagyalföld</option>
+            <option value="dunantul" style={{background:"#0d1525"}}>Dunántúl</option>
+            <option value="eszak" style={{background:"#0d1525"}}>Észak-Mo.</option>
+          </select>
+        </div>
+        <div style={{ marginLeft:"auto",display:"flex",gap:4 }}>
+          {[{k:"map",l:"🗺 Térkép"},{k:"table",l:"📋 Táblázat"},{k:"info",l:"ℹ Módszertan"}].map(t=>(
+            <button key={t.k} onClick={()=>setTab(t.k)} style={{
+              padding:"5px 10px",fontSize:10,fontFamily:"inherit",cursor:"pointer",
+              background:tab===t.k?"rgba(50,110,30,0.25)":"rgba(255,255,255,0.04)",
+              color:tab===t.k?"#a0e060":mid,
+              border:`1px solid ${tab===t.k?"rgba(50,110,30,0.4)":bd}`,borderRadius:5,
+            }}>{t.l}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* TÉRKÉP */}
+      {tab==="map" && (
+        <div style={{ padding:"10px 20px 4px" }}>
+          <div style={{ background:"rgba(255,255,255,0.02)",borderRadius:8,border:`1px solid ${bd}`,overflow:"hidden",position:"relative" }}>
+            <svg viewBox={`0 0 ${MW} ${MH}`} style={{ width:"100%",height:"auto",display:"block" }}>
+              <rect width={MW} height={MH} fill="#0d1828"/>
+              {[17,18,19,20,21,22].map(lon=>(
+                <g key={lon}>
+                  <line x1={lx(lon)} y1={0} x2={lx(lon)} y2={MH} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5"/>
+                  <text x={lx(lon)} y={MH-3} textAnchor="middle" fontSize="6" fill="rgba(255,255,255,0.15)" fontFamily="monospace">{lon}°E</text>
+                </g>
+              ))}
+              {[46,47,48].map(lat=>(
+                <g key={lat}>
+                  <line x1={0} y1={ly(lat)} x2={MW} y2={ly(lat)} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5"/>
+                  <text x={4} y={ly(lat)+2} fontSize="6" fill="rgba(255,255,255,0.15)" fontFamily="monospace">{lat}°N</text>
+                </g>
+              ))}
+              <defs>
+                {data.map(s=>(
+                  <radialGradient key={`rg${s.id}`} id={`rg${s.id}`} cx="50%" cy="50%" r="50%">
+                    <stop offset="0%"   stopColor={rc(s.p)} stopOpacity="0.7"/>
+                    <stop offset="45%"  stopColor={rc(s.p)} stopOpacity="0.25"/>
+                    <stop offset="100%" stopColor={rc(s.p)} stopOpacity="0"/>
+                  </radialGradient>
+                ))}
+              </defs>
+              <g>
+                {data.map(s=>(
+                  <circle key={`b${s.id}`} cx={lx(s.lon)} cy={ly(s.lat)}
+                    r={Math.max(20,15+s.p*0.5)} fill={`url(#rg${s.id})`}/>
+                ))}
+              </g>
+              {data.map(s=>{
+                const cx=lx(s.lon), cy=ly(s.lat);
+                const active=hover?.id===s.id;
+                const faded=region!=="all"&&s.r!==region;
+                return (
+                  <g key={s.id} onMouseEnter={()=>setHover(s)} onMouseLeave={()=>setHover(null)}
+                    style={{ cursor:"pointer",opacity:faded?0.2:1 }}>
+                    {active&&<circle cx={cx} cy={cy} r={18} fill={rc(s.p)} opacity={0.25}/>}
+                    <circle cx={cx} cy={cy} r={s.ref?7.5:5.5} fill={rc(s.p)}
+                      stroke={s.ref?"rgba(255,220,60,0.9)":"rgba(255,255,255,0.65)"}
+                      strokeWidth={s.ref?1.5:1}/>
+                    {(active||s.p>=50)&&(
+                      <text x={cx} y={cy-11} textAnchor="middle" fontSize="7" fontWeight="700"
+                        fill={rc(s.p)} fontFamily="monospace">{Math.round(s.p)}%</text>
+                    )}
+                  </g>
+                );
+              })}
+              <text x={MW/2} y={10} textAnchor="middle" fontSize="8" fill="rgba(255,255,255,0.15)" fontFamily="serif">É</text>
+              <text x={MW/2} y={MH-4} textAnchor="middle" fontSize="8" fill="rgba(255,255,255,0.15)" fontFamily="serif">D</text>
+            </svg>
+
+            {hover&&(
+              <div style={{ position:"absolute",left:"50%",bottom:8,transform:"translateX(-50%)",
+                background:"rgba(5,8,16,0.97)",border:"1px solid rgba(255,255,255,0.12)",
+                borderRadius:8,padding:"10px 14px",fontSize:12,minWidth:270,pointerEvents:"none",zIndex:10 }}>
+                <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start" }}>
+                  <div>
+                    <div style={{ fontWeight:700,fontSize:14 }}>
+                      {hover.nm}
+                      {hover.ref&&<span style={{ marginLeft:6,fontSize:9,color:"#ffd040",border:"1px solid #ffd040",borderRadius:3,padding:"1px 4px" }}>REF</span>}
+                    </div>
+                    <div style={{ color:dim,fontSize:9 }}>{hover.county} · {hover.lat.toFixed(2)}°N {hover.lon.toFixed(2)}°E</div>
+                  </div>
+                  <div style={{ textAlign:"right" }}>
+                    <div style={{ fontSize:22,fontWeight:800,color:rc(hover.p),fontFamily:"monospace" }}>{hover.p}%</div>
+                    <div style={{ fontSize:10,color:rc(hover.p),fontWeight:600 }}>{re(hover.p)} {rl(hover.p)}</div>
+                  </div>
+                </div>
+                <div style={{ marginTop:6,paddingTop:6,borderTop:"1px solid rgba(255,255,255,0.07)",fontSize:10,color:mid }}>{advice(hover.p)}</div>
+                <div style={{ marginTop:3,fontSize:9,color:dim,fontFamily:"monospace" }}>
+                  {model===1&&hover.th!=null&&`TRH9010 = ${hover.th} h (RH>90%, 15≤T≤30°C)`}
+                  {model===2&&hover.iv!=null&&`INT3 = ${hover.iv}`}
+                  {hover.obs_count!=null&&` · ${hover.obs_count} óra adat`}
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{ display:"flex",alignItems:"center",gap:2,justifyContent:"center",padding:"4px 0 6px" }}>
+            <span style={{ fontSize:8,color:dim,marginRight:4,textTransform:"uppercase",letterSpacing:"0.08em" }}>Kockázat</span>
+            {[0,10,25,40,60,80,100].map(v=>(
+              <div key={v} style={{ display:"flex",alignItems:"center",gap:2 }}>
+                <div style={{ width:16,height:6,borderRadius:1,background:rc(v) }}/>
+                <span style={{ fontSize:7,color:dim }}>{v}%</span>
+              </div>
+            ))}
+            <div style={{ marginLeft:10,display:"flex",alignItems:"center",gap:4,fontSize:8,color:dim }}>
+              <div style={{ width:7,height:7,borderRadius:"50%",background:"#888",border:"1.5px solid #ffd040" }}/>REF (MTA ATK)
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TÁBLÁZAT */}
+      {tab==="table"&&(
+        <div style={{ padding:"10px 20px 14px" }}>
+          <div style={{ background:"rgba(255,255,255,0.02)",borderRadius:8,border:`1px solid ${bd}`,overflow:"hidden" }}>
+            <div style={{ padding:"7px 12px",borderBottom:`1px solid ${bd}`,fontSize:10,fontWeight:600,color:mid,display:"flex",justifyContent:"space-between" }}>
+              <span>Állomásonkénti kockázat — {date}</span>
+              <span style={{ fontFamily:"monospace",fontSize:9 }}>Modell {model} · {filtered.length} db</span>
+            </div>
+            <div style={{ maxHeight:450,overflow:"auto" }}>
+              <table style={{ width:"100%",borderCollapse:"collapse",fontSize:11 }}>
+                <thead>
+                  <tr style={{ borderBottom:`1px solid ${bd}`,position:"sticky",top:0,background:"#0d1525" }}>
+                    {["#","Állomás","Megye","Régió",model===1?"TRH9010(h)":"INT3","p%","Szint","Javaslat"].map(h=>(
+                      <th key={h} style={{ padding:"5px 8px",textAlign:"left",color:dim,fontWeight:500,fontSize:8,textTransform:"uppercase" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((s,i)=>(
+                    <tr key={s.id} onMouseEnter={()=>setHover(s)} onMouseLeave={()=>setHover(null)}
+                      style={{ borderBottom:"1px solid rgba(255,255,255,0.025)",background:hover?.id===s.id?"rgba(255,255,255,0.04)":(i%2?"transparent":"rgba(255,255,255,0.01)"),cursor:"pointer" }}>
+                      <td style={{ padding:"4px 8px",color:dim,fontFamily:"monospace",fontSize:9 }}>{i+1}</td>
+                      <td style={{ padding:"4px 8px",fontWeight:600 }}>{s.nm}{s.ref&&<span style={{ marginLeft:4,fontSize:8,color:"#ffd040" }}>★</span>}</td>
+                      <td style={{ padding:"4px 8px",color:mid,fontSize:10 }}>{s.county}</td>
+                      <td style={{ padding:"4px 8px" }}>
+                        <span style={{ fontSize:9,padding:"1px 5px",borderRadius:3,
+                          background:s.r==="alfold"?"rgba(60,120,200,0.15)":s.r==="dunantul"?"rgba(120,80,30,0.2)":"rgba(80,60,120,0.2)",
+                          color:s.r==="alfold"?"#7ab0e0":s.r==="dunantul"?"#c09050":"#a080c0" }}>
+                          {s.r==="alfold"?"Alföld":s.r==="dunantul"?"Dunántúl":"Észak"}
+                        </span>
+                      </td>
+                      <td style={{ padding:"4px 8px",fontFamily:"monospace",fontSize:11,fontWeight:600 }}>{model===1?s.th:s.iv}</td>
+                      <td style={{ padding:"4px 8px",fontWeight:700,color:rc(s.p),fontFamily:"monospace",fontSize:13 }}>{s.p}%</td>
+                      <td style={{ padding:"4px 8px" }}>
+                        <span style={{ padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:600,background:`${rc(s.p)}22`,color:rc(s.p) }}>
+                          {re(s.p)} {rl(s.p)}
+                        </span>
+                      </td>
+                      <td style={{ padding:"4px 8px",fontSize:9,color:mid }}>{s.p>=60?"⚠ Kezelés indokolt":s.p>=40?"Figyelés ajánlott":"—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MÓDSZERTAN */}
+      {tab==="info"&&(
+        <div style={{ padding:"10px 20px 16px",fontSize:12,lineHeight:1.75 }}>
+          <div style={{ background:"rgba(255,255,255,0.02)",borderRadius:8,border:`1px solid ${bd}`,padding:16 }}>
+            <h3 style={{ color:"#d4a020",margin:"0 0 12px",fontSize:15,borderBottom:`1px solid ${bd}`,paddingBottom:8 }}>📚 Irodalom és módszertan</h3>
+            <div style={{ background:"rgba(212,160,32,0.08)",border:"1px solid rgba(212,160,32,0.2)",borderRadius:6,padding:"10px 14px",marginBottom:12,fontSize:11 }}>
+              <div style={{ fontWeight:700,marginBottom:4,color:"#e8c050" }}>Elsődleges hivatkozás:</div>
+              <div style={{ fontFamily:"monospace",fontSize:11,lineHeight:1.6,color:mid }}>
+                Mesterházy Á., Bartók T., Mirocha C.G., Komoroczy R. (1999):<br/>
+                <em>"Nature of wheat resistance to Fusarium head blight and the role of deoxynivalenol for breeding."</em><br/>
+                <strong>Plant Breeding</strong> 118: 97–110. DOI: 10.1046/j.1439-0523.1999.118001097.x
+              </div>
+            </div>
+            <div style={{ background:"rgba(212,160,32,0.05)",border:"1px solid rgba(212,160,32,0.1)",borderRadius:6,padding:"10px 14px",marginBottom:12,fontSize:11 }}>
+              <div style={{ fontWeight:700,marginBottom:4,color:"#e8c050" }}>Magyar adaptáció:</div>
+              <div style={{ fontFamily:"monospace",fontSize:11,lineHeight:1.6,color:mid }}>
+                Gyimes E., Véha A., Szabó B.P., Galbács Z. (2012):<br/>
+                <em>"Fusarium fertőzés előrejelzése meteorológiai adatok alapján."</em><br/>
+                <strong>Növényvédelem</strong> 48(8): 347–352.
+              </div>
+            </div>
+            <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12 }}>
+              {[
+                {t:"① TRH9010 modell",f:"p% = −3.3756 + 6.8128 × TRH9010",d:"TRH9010 = 7 napos ablakban a leghosszabb egybefüggő órasorozat, ahol RH > 90% ÉS 15°C ≤ T ≤ 30°C"},
+                {t:"② INT3 interakciós modell",f:"p% = −3.7251 + 10.5097 × INT3",d:"INT3 = (virágzás utáni max. egybefüggő RH>90% óra) × (virágzás előtti 15–30°C arány). Virágzás = ablak 4. napja"},
+              ].map((m,i)=>(
+                <div key={i} style={{ background:"rgba(255,255,255,0.02)",borderRadius:6,padding:10,border:`1px solid ${bd}` }}>
+                  <div style={{ fontWeight:700,color:"#e8c050",marginBottom:5,fontSize:12 }}>{m.t}</div>
+                  <div style={{ fontFamily:"monospace",background:"rgba(0,0,0,0.3)",padding:"4px 7px",borderRadius:4,marginBottom:5,fontSize:11 }}>{m.f}</div>
+                  <div style={{ color:dim,fontSize:10,lineHeight:1.5 }}>{m.d}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ padding:"8px 12px",background:"rgba(255,255,255,0.02)",borderRadius:6,border:`1px solid ${bd}`,fontSize:10,color:dim }}>
+              <strong style={{ color:mid }}>Adatforrás:</strong> HungaroMet ODP szinoptikus óránkénti CSV<br/>
+              <code style={{ color:"#d4a020" }}>odp.met.hu/weather/weather_reports/synoptic/hungary/hourly/</code><br/>
+              Oszlopok: <code>ta</code> (°C), <code>u</code> (%), adathiány: <code>-999</code><br/>
+              DB: Supabase PostgreSQL · daelyokkshcgtbijcfbz · eu-west-1
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ padding:"6px 20px 14px",textAlign:"center",fontSize:9,color:dim,borderTop:`1px solid ${bd}` }}>
+        Mesterházy et al. (1999) Plant Breeding 118:97–110 · Gyimes et al. (2012) Növényvédelem 48(8) · HungaroMet ODP
+      </div>
+    </div>
+  );
+}
