@@ -108,3 +108,24 @@ jobs:
           if r.ok:
               print('Legfrissebb adat:', r.json())
           "
+
+  # ── OPCIONÁLIS: Historikus backfill (csak manuálisan) ──
+  backfill:
+    name: Historikus backfill
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.mode == 'backfill'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r scripts/requirements.txt
+      - name: Backfill 2024-2026 szezónok
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/backfill_history.py --years 2024 2025 2026
