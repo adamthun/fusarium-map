@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { MapContainer, TileLayer, CircleMarker, Tooltip, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Circle, Tooltip, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
 // ══════════════════════════════════════════════════════════════
@@ -512,14 +512,14 @@ export default function App() {
               {showHeat && filtered.map(s => {
                 const colors = rcLeaflet(s.p);
                 return (
-                  <CircleMarker
+                  <Circle
                     key={`heat-${s.id}`}
                     center={[s.lat, s.lon]}
-                    radius={Math.max(25, 20 + s.p * 0.5)}
+                    radius={Math.max(30000, 25000 + s.p * 350)}
                     pathOptions={{
                       color: colors.color,
                       fillColor: colors.fill,
-                      fillOpacity: 0.18,
+                      fillOpacity: 0.20,
                       weight: 0,
                     }}
                   />

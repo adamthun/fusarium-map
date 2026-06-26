@@ -2,8 +2,11 @@ name: Fusarium ODP Adatgyűjtő
 
 on:
   schedule:
-    - cron: '45 * * * *'
-    - cron: '0 6 * * *'
+    # Napi 1x letöltés + számítás (volt: óránként = 2000 perc/hó elfogyott)
+    # Most: ~60 futás/hó × 3 perc = ~180 perc → bőven belefér a 2000-be
+    - cron: '0 5 * * *'    # 05:00 UTC (07:00 CET) - adatletöltés
+    - cron: '0 6 * * *'    # 06:00 UTC (08:00 CET) - kockázatszámítás
+
   workflow_dispatch:
     inputs:
       date:
