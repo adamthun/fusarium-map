@@ -1,0 +1,6 @@
+# Automatikus HTTPS (Let's Encrypt). A DOMAIN a .env-ben állítandó,
+# a domain DNS A-rekordja a VM nyilvános IP-jére mutasson.
+{$DOMAIN} {
+    encode gzip
+    reverse_proxy web:80
+}

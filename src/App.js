@@ -14,7 +14,7 @@ import "leaflet/dist/leaflet.css";
 
 const SUPABASE_URL  = process.env.REACT_APP_SUPABASE_URL  || "https://daelyokkshcgtbijcfbz.supabase.co";
 const SUPABASE_ANON = process.env.REACT_APP_SUPABASE_ANON_KEY || "";
-const EDGE_FN       = `${SUPABASE_URL}/functions/v1/fusarium-api`;
+const EDGE_FN       = process.env.REACT_APP_API_URL ||`${SUPABASE_URL}/functions/v1/fusarium-api`;
 
 const STATIONS = [
   {id:44309,nm:"Szeged",             lat:46.2561,lon:20.0900,county:"Csongrád-Csanád",   r:"alfold",  w:true},

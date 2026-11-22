@@ -1,0 +1,84 @@
+# Fusarium kockázati térkép — saját üzemeltetés
+# Indítás:   cd deploy && cp .env.example .env && (szerkesztés) && docker compose up -d --build
+# HTTPS-sel: docker compose --profile https up -d --build
+name: fusarium
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fusarium}
+      POSTGRES_USER: ${POSTGRES_USER:-fusarium}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Állítsd be a POSTGRES_PASSWORD-öt a .env-ben}
+      TZ: Europe/Budapest
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Nincs kifelé publikált port. Adminisztrációhoz: docker compose exec db psql -U fusarium
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fusarium}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fusarium}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build: ./worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fusarium}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fusarium}
+      DAILY_HOUR: ${DAILY_HOUR:-7}
+      RUN_ON_START: ${RUN_ON_START:-1}
+      REFRESH_DAYS: ${REFRESH_DAYS:-7}
+      USE_ODP: ${USE_ODP:-1}
+      TZ_LOCAL: Europe/Budapest
+    depends_on:
+      db: { condition: service_healthy }
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web/Dockerfile
+      args:
+        REACT_APP_API_URL: /api/fusarium-api
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
